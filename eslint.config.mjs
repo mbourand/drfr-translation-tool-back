@@ -35,7 +35,8 @@ export default tseslint.config(
         {
           printWidth: 120,
           semi: false,
-          trailingComma: 'none'
+          trailingComma: 'none',
+          endOfLine: 'lf'
         }
       ]
     }

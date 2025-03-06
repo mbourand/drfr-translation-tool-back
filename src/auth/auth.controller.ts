@@ -1,12 +1,38 @@
 import { Body, Controller, InternalServerErrorException, Logger, Post } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { IsString } from 'class-validator'
+import { Expose, plainToInstance } from 'class-transformer'
+import { IsNumber, IsString } from 'class-validator'
 import { EnvironmentVariables } from 'src/env'
 import { RoutesService } from 'src/routes/routes.service'
 
 export class ConfirmAuthQueryDto {
   @IsString()
   code: string
+}
+
+export class TokenInfosDto {
+  @Expose({ name: 'access_token' })
+  @IsString()
+  accessToken: string
+
+  @Expose({ name: 'refresh_token' })
+  @IsString()
+  refreshToken: string
+
+  @Expose({ name: 'token_type' })
+  @IsString()
+  tokenType: string
+
+  @Expose({ name: 'expires_in' })
+  @IsNumber()
+  expiresIn: number
+
+  @Expose({ name: 'refresh_token_expires_in' })
+  @IsNumber()
+  refreshTokenExpiresIn: number
+
+  @IsString()
+  scope: string
 }
 
 @Controller('auth')
@@ -42,14 +68,8 @@ export class AuthController {
 
     const data = await response.text()
     const responseParams = new URLSearchParams(data)
-    const accessToken = responseParams.get('access_token')
-    if (!accessToken) {
-      Logger.error(`Failed to get access token, got ${data}`)
-      throw new InternalServerErrorException('Failed to get access token')
-    }
+    const tokenInfo = plainToInstance(TokenInfosDto, Object.fromEntries(responseParams.entries()))
 
-    Logger.log('Got access token', urlSearchParams.toString())
-
-    return { ok: 'Ok' }
+    return tokenInfo
   }
 }
