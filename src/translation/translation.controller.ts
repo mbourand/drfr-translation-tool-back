@@ -1,7 +1,11 @@
-import { Body, Controller, Get, Post, Req } from '@nestjs/common'
+import { Cache, CACHE_MANAGER } from '@nestjs/cache-manager'
+import { Body, Controller, Get, Inject, Logger, Post, Query, Req } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
 import { IsString, MaxLength, MinLength } from 'class-validator'
 import * as dayjs from 'dayjs'
 import { Request } from 'express'
+import { CACHE_KEYS } from 'src/cache/cache.constants'
+import { EnvironmentVariables } from 'src/env'
 import { RoutesService } from 'src/routes/routes.service'
 
 class CreateTranslationDto {
@@ -13,12 +17,21 @@ class CreateTranslationDto {
 
 @Controller('translation')
 export class TranslationController {
-  constructor(private readonly routeService: RoutesService) {}
+  constructor(
+    private readonly routeService: RoutesService,
+    private readonly configService: ConfigService<EnvironmentVariables>,
+    @Inject(CACHE_MANAGER) private readonly cacheManager: Cache
+  ) {}
 
   @Get('/list')
   async getAllTranslations(@Req() req: Request) {
+    const repositoryOwner = this.configService.getOrThrow('REPOSITORY_OWNER', { infer: true })
+    const repositoryName = this.configService.getOrThrow('REPOSITORY_NAME', { infer: true })
+    const mainBranch = this.configService.getOrThrow('REPOSITORY_MAIN_BRANCH', { infer: true })
+
     const response = await fetch(
-      this.routeService.GITHUB_ROUTES.LIST_PULL_REQUESTS('mbourand', 'deltarune-fr') + '?base=master&state=all',
+      this.routeService.GITHUB_ROUTES.LIST_PULL_REQUESTS(repositoryOwner, repositoryName) +
+        `?base=${mainBranch}&state=all`,
       {
         headers: {
           Accept: 'application/vnd.github+json',
@@ -34,8 +47,14 @@ export class TranslationController {
 
   @Post('/')
   async createTranslation(@Req() req: Request, @Body() body: CreateTranslationDto) {
+    const repositoryOwner = this.configService.getOrThrow('REPOSITORY_OWNER', { infer: true })
+    const repositoryName = this.configService.getOrThrow('REPOSITORY_NAME', { infer: true })
+    const mainBranch = this.configService.getOrThrow('REPOSITORY_MAIN_BRANCH', { infer: true })
+    const translationLabel = this.configService.getOrThrow('TRANSLATION_LABEL_NAME', { infer: true })
+    const wipLabel = this.configService.getOrThrow('TRANSLATION_WIP_LABEL_NAME', { infer: true })
+
     const lastMasterCommitResponse = await fetch(
-      this.routeService.GITHUB_ROUTES.COMMITS('mbourand', 'deltarune-fr', 'master'),
+      this.routeService.GITHUB_ROUTES.COMMITS(repositoryOwner, repositoryName, mainBranch),
       {
         headers: {
           Accept: 'application/vnd.github+json',
@@ -57,15 +76,18 @@ export class TranslationController {
     const head = now.format('YYYY-MM-DD-HH-mm-ss-SSS')
     const ref = `refs/heads/${head}`
 
-    const refCreationResponse = await fetch(this.routeService.GITHUB_ROUTES.CREATE_REF('mbourand', 'deltarune-fr'), {
-      method: 'POST',
-      headers: {
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
-      },
-      body: JSON.stringify({ ref, sha: lastMasterCommit.sha })
-    })
+    const refCreationResponse = await fetch(
+      this.routeService.GITHUB_ROUTES.CREATE_REF(repositoryOwner, repositoryName),
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+        },
+        body: JSON.stringify({ ref, sha: lastMasterCommit.sha })
+      }
+    )
 
     if (!refCreationResponse.ok)
       throw new Error(
@@ -73,7 +95,7 @@ export class TranslationController {
       )
 
     const branchIdentifierContentsResponse = await fetch(
-      this.routeService.GITHUB_ROUTES.READ_FILE('mbourand', 'deltarune-fr', '.branch-identifier') + `?ref=${head}`,
+      this.routeService.GITHUB_ROUTES.READ_FILE(repositoryOwner, repositoryName, '.branch-identifier') + `?ref=${head}`,
       {
         headers: {
           Accept: 'application/vnd.github.v3+json',
@@ -92,7 +114,7 @@ export class TranslationController {
 
     // Edit readme.md to add the branch name at the end
     const editionReponse = await fetch(
-      this.routeService.GITHUB_ROUTES.EDIT_FILE('mbourand', 'deltarune-fr', '.branch-identifier'),
+      this.routeService.GITHUB_ROUTES.EDIT_FILE(repositoryOwner, repositoryName, '.branch-identifier'),
       {
         method: 'PUT',
         headers: {
@@ -115,7 +137,7 @@ export class TranslationController {
       )
 
     const pullRequestCreationResponse = await fetch(
-      this.routeService.GITHUB_ROUTES.CREATE_PULL_REQUEST('mbourand', 'deltarune-fr'),
+      this.routeService.GITHUB_ROUTES.CREATE_PULL_REQUEST(repositoryOwner, repositoryName),
       {
         method: 'POST',
         headers: {
@@ -123,7 +145,7 @@ export class TranslationController {
           'X-GitHub-Api-Version': '2022-11-28',
           ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
         },
-        body: JSON.stringify({ title: body.name, head, base: 'master' })
+        body: JSON.stringify({ title: body.name, head, base: mainBranch })
       }
     )
 
@@ -135,7 +157,7 @@ export class TranslationController {
     const pullRequest = (await pullRequestCreationResponse.json()) as { number: number }
 
     const addLabelResponse = await fetch(
-      this.routeService.GITHUB_ROUTES.ADD_LABEL('mbourand', 'deltarune-fr', pullRequest.number),
+      this.routeService.GITHUB_ROUTES.ADD_LABEL(repositoryOwner, repositoryName, pullRequest.number),
       {
         method: 'POST',
         headers: {
@@ -143,7 +165,7 @@ export class TranslationController {
           'X-GitHub-Api-Version': '2022-11-28',
           ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
         },
-        body: JSON.stringify(['Traduction', 'En cours'])
+        body: JSON.stringify([translationLabel, wipLabel])
       }
     )
 
@@ -153,5 +175,95 @@ export class TranslationController {
       )
 
     return pullRequest
+  }
+
+  @Get('/files')
+  public async getFiles(@Req() req: Request, @Query('branch') branch: string) {
+    const cachedFiles = await this.cacheManager.get(CACHE_KEYS.FILES(branch))
+    if (cachedFiles) {
+      Logger.log(`Returning cached files for branch ${branch}`)
+      return cachedFiles
+    }
+
+    const repositoryOwner = this.configService.getOrThrow('REPOSITORY_OWNER', { infer: true })
+    const repositoryName = this.configService.getOrThrow('REPOSITORY_NAME', { infer: true })
+
+    const filePaths = [
+      {
+        original: 'chapitre-0/strings_en.txt',
+        translated: 'chapitre-0/strings_fr.txt',
+        name: 'Strings du chapitre 0',
+        category: 'Chapitre 0'
+      },
+      {
+        original: 'chapitre-1/lang_en.json',
+        translated: 'chapitre-1/lang_fr.json',
+        name: 'Dialogues du chapitre 1',
+        category: 'Chapitre 1'
+      },
+      {
+        original: 'chapitre-1/strings_en.txt',
+        translated: 'chapitre-1/strings_fr.txt',
+        name: 'Strings du chapitre 1',
+        category: 'Chapitre 1'
+      },
+      {
+        original: 'chapitre-2/strings_en.txt',
+        translated: 'chapitre-2/strings_fr.txt',
+        name: 'Strings du chapitre 2',
+        category: 'Chapitre 2'
+      }
+    ]
+
+    const files = await Promise.all(
+      filePaths.map(async ({ original, translated, name, category }) => {
+        const originalFileResponse = await fetch(
+          this.routeService.GITHUB_ROUTES.READ_FILE(repositoryOwner, repositoryName, original) + `?ref=${branch}`,
+          {
+            headers: {
+              Accept: 'application/vnd.github.v3+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+            }
+          }
+        )
+
+        if (!originalFileResponse.ok)
+          throw new Error(
+            `Failed to read original file ${originalFileResponse.status} ${originalFileResponse.statusText} ${await originalFileResponse.text()}`
+          )
+
+        const originalFile = (await originalFileResponse.json()) as { download_url: string }
+
+        const translatedFileResponse = await fetch(
+          this.routeService.GITHUB_ROUTES.READ_FILE(repositoryOwner, repositoryName, translated) + `?ref=${branch}`,
+          {
+            headers: {
+              Accept: 'application/vnd.github.v3+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+            }
+          }
+        )
+
+        if (!translatedFileResponse.ok)
+          throw new Error(
+            `Failed to read translated file ${translatedFileResponse.status} ${translatedFileResponse.statusText} ${await translatedFileResponse.text()}`
+          )
+
+        const translatedFile = (await translatedFileResponse.json()) as { download_url: string }
+
+        return {
+          category,
+          name,
+          original: originalFile.download_url,
+          translated: translatedFile.download_url
+        }
+      })
+    )
+
+    await this.cacheManager.set(CACHE_KEYS.FILES(branch), files, 24 * 60 * 60)
+
+    return files
   }
 }
