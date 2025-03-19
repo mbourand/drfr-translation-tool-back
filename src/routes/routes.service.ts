@@ -21,7 +21,9 @@ export class RoutesService {
       COMMITS: (owner: string, repo: string, branch: string) =>
         `${apiBaseUrl}/repos/${owner}/${repo}/commits/${branch}`,
       ADD_LABEL: (owner: string, repo: string, issueNumber: number) =>
-        `${apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/labels`
+        `${apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/labels`,
+      DELETE_LABEL: (owner: string, repo: string, issueNumber: number, labelName: string) =>
+        `${apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/labels/${labelName}`
     } as const
   }
 }

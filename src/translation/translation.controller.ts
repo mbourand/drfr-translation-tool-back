@@ -15,6 +15,11 @@ class CreateTranslationDto {
   name: string
 }
 
+class SubmitToCorrectionDto {
+  @IsString()
+  branch: string
+}
+
 @Controller('translation')
 export class TranslationController {
   constructor(
@@ -265,5 +270,67 @@ export class TranslationController {
     await this.cacheManager.set(CACHE_KEYS.FILES(branch), files, 24 * 60 * 60)
 
     return files
+  }
+
+  @Post('/submit-to-review')
+  async review(@Req() req: Request, @Body() body: SubmitToCorrectionDto) {
+    const repositoryOwner = this.configService.getOrThrow('REPOSITORY_OWNER', { infer: true })
+    const repositoryName = this.configService.getOrThrow('REPOSITORY_NAME', { infer: true })
+    const mainBranch = this.configService.getOrThrow('REPOSITORY_MAIN_BRANCH', { infer: true })
+    const translationLabel = this.configService.getOrThrow('TRANSLATION_LABEL_NAME', { infer: true })
+    const reviewLabel = this.configService.getOrThrow('TRANSLATION_REVIEW_LABEL_NAME', { infer: true })
+    const wipLabel = this.configService.getOrThrow('TRANSLATION_WIP_LABEL_NAME', { infer: true })
+
+    const response = await fetch(
+      this.routeService.GITHUB_ROUTES.LIST_PULL_REQUESTS(repositoryOwner, repositoryName) +
+        `?head=${body.branch}&base=${mainBranch}`,
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+        }
+      }
+    )
+
+    if (!response.ok) throw new Error(`Failed to fetch data ${response.status} ${response.statusText}`)
+    const pullRequests = (await response.json()) as { number: number }[]
+
+    const deleteLabelResponse = await fetch(
+      this.routeService.GITHUB_ROUTES.DELETE_LABEL(repositoryOwner, repositoryName, pullRequests[0].number, wipLabel),
+      {
+        method: 'DELETE',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+        }
+      }
+    )
+
+    if (!deleteLabelResponse.ok)
+      throw new Error(
+        `Failed to delete label from PR ${deleteLabelResponse.status} ${deleteLabelResponse.statusText} ${await deleteLabelResponse.text()}`
+      )
+
+    const addLabelResponse = await fetch(
+      this.routeService.GITHUB_ROUTES.ADD_LABEL(repositoryOwner, repositoryName, pullRequests[0].number),
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+        },
+        body: JSON.stringify([translationLabel, reviewLabel])
+      }
+    )
+
+    if (!addLabelResponse.ok)
+      throw new Error(
+        `Failed to add label to PR ${addLabelResponse.status} ${addLabelResponse.statusText} ${await addLabelResponse.text()}`
+      )
+
+    return { success: true }
   }
 }
