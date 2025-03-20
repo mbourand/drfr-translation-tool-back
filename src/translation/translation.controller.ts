@@ -1,18 +1,67 @@
 import { Cache, CACHE_MANAGER } from '@nestjs/cache-manager'
 import { Body, Controller, Get, Inject, Logger, Post, Query, Req } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { IsString, MaxLength, MinLength } from 'class-validator'
+import { Type } from 'class-transformer'
+import { IsArray, IsString, ValidateNested } from 'class-validator'
 import * as dayjs from 'dayjs'
 import { Request } from 'express'
 import { CACHE_KEYS } from 'src/cache/cache.constants'
 import { EnvironmentVariables } from 'src/env'
 import { RoutesService } from 'src/routes/routes.service'
 
+const filePaths = [
+  {
+    original: 'chapitre-0/strings_en.txt',
+    translated: 'chapitre-0/strings_fr.txt',
+    name: 'Strings du chapitre 0',
+    category: 'Chapitre 0'
+  },
+  {
+    original: 'chapitre-1/lang_en.json',
+    translated: 'chapitre-1/lang_fr.json',
+    name: 'Dialogues du chapitre 1',
+    category: 'Chapitre 1'
+  },
+  {
+    original: 'chapitre-1/strings_en.txt',
+    translated: 'chapitre-1/strings_fr.txt',
+    name: 'Strings du chapitre 1',
+    category: 'Chapitre 1'
+  },
+  {
+    original: 'chapitre-2/strings_en.txt',
+    translated: 'chapitre-2/strings_fr.txt',
+    name: 'Strings du chapitre 2',
+    category: 'Chapitre 2'
+  }
+]
+
 class CreateTranslationDto {
-  @IsString()
-  @MinLength(5)
-  @MaxLength(80)
+  // @IsString()
+  // @MinLength(5)
+  // @MaxLength(80)
   name: string
+}
+
+class SaveFilesFileDto {
+  @IsString()
+  path: string
+
+  @IsString()
+  content: string
+}
+
+class SaveFilesBodyDto {
+  @IsString()
+  branch: string
+
+  @IsString()
+  message: string
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SaveFilesFileDto)
+  files: SaveFilesFileDto[]
 }
 
 class SubmitToCorrectionDto {
@@ -118,7 +167,7 @@ export class TranslationController {
     const branchIdentifierContents = (await branchIdentifierContentsResponse.json()) as { sha: string }
 
     // Edit readme.md to add the branch name at the end
-    const editionReponse = await fetch(
+    const editionResponse = await fetch(
       this.routeService.GITHUB_ROUTES.EDIT_FILE(repositoryOwner, repositoryName, '.branch-identifier'),
       {
         method: 'PUT',
@@ -136,9 +185,9 @@ export class TranslationController {
       }
     )
 
-    if (!editionReponse.ok)
+    if (!editionResponse.ok)
       throw new Error(
-        `Failed to edit branch identifier ${editionReponse.status} ${editionReponse.statusText} ${await editionReponse.text()}`
+        `Failed to edit branch identifier ${editionResponse.status} ${editionResponse.statusText} ${await editionResponse.text()}`
       )
 
     const pullRequestCreationResponse = await fetch(
@@ -193,33 +242,6 @@ export class TranslationController {
     const repositoryOwner = this.configService.getOrThrow('REPOSITORY_OWNER', { infer: true })
     const repositoryName = this.configService.getOrThrow('REPOSITORY_NAME', { infer: true })
 
-    const filePaths = [
-      {
-        original: 'chapitre-0/strings_en.txt',
-        translated: 'chapitre-0/strings_fr.txt',
-        name: 'Strings du chapitre 0',
-        category: 'Chapitre 0'
-      },
-      {
-        original: 'chapitre-1/lang_en.json',
-        translated: 'chapitre-1/lang_fr.json',
-        name: 'Dialogues du chapitre 1',
-        category: 'Chapitre 1'
-      },
-      {
-        original: 'chapitre-1/strings_en.txt',
-        translated: 'chapitre-1/strings_fr.txt',
-        name: 'Strings du chapitre 1',
-        category: 'Chapitre 1'
-      },
-      {
-        original: 'chapitre-2/strings_en.txt',
-        translated: 'chapitre-2/strings_fr.txt',
-        name: 'Strings du chapitre 2',
-        category: 'Chapitre 2'
-      }
-    ]
-
     const files = await Promise.all(
       filePaths.map(async ({ original, translated, name, category }) => {
         const originalFileResponse = await fetch(
@@ -261,15 +283,154 @@ export class TranslationController {
         return {
           category,
           name,
+          translatedPath: translated,
+          originalPath: original,
           original: originalFile.download_url,
           translated: translatedFile.download_url
         }
       })
     )
 
-    await this.cacheManager.set(CACHE_KEYS.FILES(branch), files, 24 * 60 * 60)
+    await this.cacheManager.set(CACHE_KEYS.FILES(branch), files, 60 * 60)
 
     return files
+  }
+
+  @Post('/files')
+  public async saveFiles(@Req() req: Request, @Body() body: SaveFilesBodyDto) {
+    const repositoryOwner = this.configService.getOrThrow('REPOSITORY_OWNER', { infer: true })
+    const repositoryName = this.configService.getOrThrow('REPOSITORY_NAME', { infer: true })
+
+    const refResponse = await fetch(
+      this.routeService.GITHUB_ROUTES.GET_BRANCH(repositoryOwner, repositoryName, body.branch),
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+        }
+      }
+    )
+    if (!refResponse.ok)
+      throw new Error(`Failed to get ref ${refResponse.status} ${refResponse.statusText} ${await refResponse.text()}`)
+
+    const refData = (await refResponse.json()) as { object: { sha: string } }
+    const commitSha = refData.object.sha
+
+    const treeShaResponse = await fetch(
+      this.routeService.GITHUB_ROUTES.TREE_SHA(repositoryOwner, repositoryName, commitSha),
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+        }
+      }
+    )
+    if (!treeShaResponse.ok)
+      throw new Error(
+        `Failed to get tree sha ${treeShaResponse.status} ${treeShaResponse.statusText} ${await treeShaResponse.text()}`
+      )
+
+    const commitData = (await treeShaResponse.json()) as { tree: { sha: string } }
+    const baseTreeSha = commitData.tree.sha
+
+    const blobsPromises = body.files.map(async (file) => {
+      const blobResponse = await fetch(this.routeService.GITHUB_ROUTES.CREATE_BLOB(repositoryOwner, repositoryName), {
+        method: 'POST',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+        },
+        body: JSON.stringify({
+          content: file.content,
+          encoding: 'utf-8'
+        })
+      })
+      if (!blobResponse.ok)
+        throw new Error(
+          `Failed to create blob ${blobResponse.status} ${blobResponse.statusText} ${await blobResponse.text()}`
+        )
+
+      const blobData = (await blobResponse.json()) as { sha: string }
+      return {
+        path: file.path,
+        mode: '100644',
+        type: 'blob',
+        sha: blobData.sha
+      }
+    })
+
+    const blobs = await Promise.all(blobsPromises)
+
+    console.log({
+      base_tree: baseTreeSha,
+      tree: blobs
+    })
+
+    const newTreeResponse = await fetch(this.routeService.GITHUB_ROUTES.CREATE_TREE(repositoryOwner, repositoryName), {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+      },
+      body: JSON.stringify({
+        base_tree: baseTreeSha,
+        tree: blobs
+      })
+    })
+    if (!newTreeResponse.ok)
+      throw new Error(
+        `Failed to create tree ${newTreeResponse.status} ${newTreeResponse.statusText} ${await newTreeResponse.text()}`
+      )
+    const newTreeData = (await newTreeResponse.json()) as { sha: string }
+
+    const newCommitResponse = await fetch(
+      this.routeService.GITHUB_ROUTES.CREATE_COMMIT(repositoryOwner, repositoryName),
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+        },
+        body: JSON.stringify({
+          message: body.message,
+          tree: newTreeData.sha,
+          parents: [commitSha]
+        })
+      }
+    )
+    if (!newCommitResponse.ok)
+      throw new Error(
+        `Failed to create commit ${newCommitResponse.status} ${newCommitResponse.statusText} ${await newCommitResponse.text()}`
+      )
+    const newCommitData = (await newCommitResponse.json()) as { sha: string }
+
+    const updateBranchHeadResponse = await fetch(
+      this.routeService.GITHUB_ROUTES.UPDATE_BRANCH_HEAD(repositoryOwner, repositoryName, body.branch),
+      {
+        method: 'PATCH',
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          ...(req.headers.authorization ? { Authorization: req.headers.authorization } : {})
+        },
+        body: JSON.stringify({
+          sha: newCommitData.sha
+        })
+      }
+    )
+    if (!updateBranchHeadResponse.ok)
+      throw new Error(
+        `Failed to update branch head ${updateBranchHeadResponse.status} ${updateBranchHeadResponse.statusText} ${await updateBranchHeadResponse.text()}`
+      )
+
+    await this.cacheManager.del(CACHE_KEYS.FILES(body.branch))
+
+    return { success: true }
   }
 
   @Post('/submit-to-review')

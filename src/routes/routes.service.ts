@@ -23,7 +23,15 @@ export class RoutesService {
       ADD_LABEL: (owner: string, repo: string, issueNumber: number) =>
         `${apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/labels`,
       DELETE_LABEL: (owner: string, repo: string, issueNumber: number, labelName: string) =>
-        `${apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/labels/${labelName}`
+        `${apiBaseUrl}/repos/${owner}/${repo}/issues/${issueNumber}/labels/${labelName}`,
+      GET_BRANCH: (owner: string, repo: string, branch: string) =>
+        `${apiBaseUrl}/repos/${owner}/${repo}/git/ref/heads/${branch}`,
+      TREE_SHA: (owner: string, repo: string, sha: string) => `${apiBaseUrl}/repos/${owner}/${repo}/git/commits/${sha}`,
+      CREATE_BLOB: (owner: string, repo: string) => `${apiBaseUrl}/repos/${owner}/${repo}/git/blobs`,
+      CREATE_TREE: (owner: string, repo: string) => `${apiBaseUrl}/repos/${owner}/${repo}/git/trees`,
+      CREATE_COMMIT: (owner: string, repo: string) => `${apiBaseUrl}/repos/${owner}/${repo}/git/commits`,
+      UPDATE_BRANCH_HEAD: (owner: string, repo: string, branch: string) =>
+        `https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`
     } as const
   }
 }
